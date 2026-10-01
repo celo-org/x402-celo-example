@@ -1,0 +1,27 @@
+{
+  "name": "x402-celo-example",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runnable example of x402 stablecoin payments on Celo: a seller that charges USDC per request and a buyer that pays it, using the Celo facilitator.",
+  "scripts": {
+    "seller": "tsx src/seller.ts",
+    "buyer": "tsx src/buyer.ts",
+    "check": "tsx src/check.ts",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1",
+    "@x402/core": "2.27.0",
+    "@x402/evm": "2.27.0",
+    "@x402/fetch": "2.27.0",
+    "@x402/hono": "2.27.0",
+    "hono": "^4",
+    "viem": "^2"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}
