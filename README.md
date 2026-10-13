@@ -66,7 +66,7 @@ merchant  runs the work only after settlement
           task completed + report + x402.payment.receipts          -> buyer
 ```
 
-The merchant serves A2A v1.0 clients and, through the SDK's compatibility layer, A2A v0.3 clients (`message/send`, the `X-A2A-Extensions` header), which is what the x402 transport spec's examples and Google's `a2a-x402` use. The `x402.payment.*` metadata is the same in both.
+The merchant serves A2A v1.0 clients and, through the SDK's compatibility layer, A2A v0.3 clients (`message/send`, the `X-A2A-Extensions` header), the A2A version the x402 transport spec's examples use. The `x402.payment.*` metadata is the same in both. Payments must be x402 **v2**. Clients that still send x402 v1 payloads, such as Google's `a2a-x402` today, get `payment-failed` with `errorReason: unsupported_x402_version`.
 
 Run it with the same `.env` as above:
 

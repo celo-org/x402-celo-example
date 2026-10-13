@@ -84,6 +84,23 @@ describe('A2A v0.3 clients', () => {
     expect(paid.result.artifacts[0].parts[0]).toMatchObject({ kind: 'text', text: 'block 123' })
   })
 
+  it('tells an x402 v1 client (e.g. Google a2a-x402) that its payment version is unsupported', async () => {
+    const quote = await v03('message/send', {
+      message: { kind: 'message', messageId: crypto.randomUUID(), role: 'user', parts: [{ kind: 'text', text: 'network report please' }] },
+    })
+    // The v1 payload shape a2a-x402 sends: top-level scheme/network, no `accepted`.
+    const v1Payload = { x402Version: 1, scheme: 'exact', network: 'base-sepolia', payload: { signature: '0xsig', authorization: {} } }
+    const failed = await v03('message/send', {
+      message: {
+        kind: 'message', messageId: crypto.randomUUID(), role: 'user', taskId: quote.result.id, contextId: quote.result.contextId,
+        parts: [{ kind: 'text', text: 'paying' }],
+        metadata: { [X402_METADATA_KEYS.status]: 'payment-submitted', [X402_METADATA_KEYS.payload]: v1Payload },
+      },
+    })
+    expect(failed.result.status.state).toBe('failed')
+    expect(failed.result.status.message.metadata[X402_METADATA_KEYS.receipts][0].errorReason).toBe('unsupported_x402_version')
+  })
+
   it('rejects a v0.3 request that does not activate the required extension', async () => {
     const res = await fetch(`${base}/`, {
       method: 'POST',
