@@ -9,7 +9,10 @@
     "buyer": "tsx src/buyer.ts",
     "check": "tsx src/check.ts",
     "typecheck": "tsc",
-    "test": "vitest run"
+    "test": "vitest run",
+    "a2a:merchant": "tsx src/a2a/merchant.ts",
+    "a2a:buyer": "tsx src/a2a/buyer.ts",
+    "a2a:demo": "tsx src/a2a/demo.ts"
   },
   "dependencies": {
     "@a2a-js/sdk": "^1.3.0",

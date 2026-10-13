@@ -106,6 +106,10 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
         return fail(ctx, bus, errorCodeForInvalidReason(reason), failureReceipt(matched.network, reason))
       }
     } catch (error) {
+      // HTTPFacilitatorClient throws VerifyError on a non-200 verify; its
+      // invalidReason is a facilitator code (e.g. insufficient_funds) and safe to pass on.
+      const reason = reasonCode(error, 'invalidReason')
+      if (reason) return fail(ctx, bus, errorCodeForInvalidReason(reason), failureReceipt(matched.network, reason))
       console.error('[x402] verify failed:', (error as Error).message)
       return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(matched.network, 'facilitator_verify_error'))
     }
@@ -115,7 +119,8 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
       receipt = await resourceServer.settlePayment(payload, matched)
     } catch (error) {
       console.error('[x402] settle failed:', (error as Error).message)
-      return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(matched.network, 'facilitator_settle_error'))
+      const reason = reasonCode(error, 'errorReason') ?? 'facilitator_settle_error'
+      return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(matched.network, reason))
     }
     if (!receipt.success) {
       return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(receipt.network ?? matched.network, receipt.errorReason ?? 'settlement_failed'))
@@ -146,6 +151,16 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
       return inner.cancelTask(taskId, bus)
     },
   }
+}
+
+/**
+ * Reads the facilitator reason code from a VerifyError (invalidReason) or
+ * SettleError (errorReason). Only snake_case codes are passed on, never free
+ * text, so an error message cannot leak into the receipt.
+ */
+function reasonCode(error: unknown, field: 'invalidReason' | 'errorReason'): string | undefined {
+  const value = (error as Record<string, unknown> | null)?.[field]
+  return typeof value === 'string' && /^[a-z0-9_]{1,80}$/.test(value) ? value : undefined
 }
 
 function agentMessage(ctx: RequestContext, text: string, metadata: Metadata): Message {

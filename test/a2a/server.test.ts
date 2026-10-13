@@ -110,6 +110,15 @@ describe('createPaymentExecutor', () => {
       settles: false,
     },
     {
+      // HTTPFacilitatorClient throws VerifyError on a non-200 verify, as the Celo facilitator does for insufficient funds.
+      name: 'verify throws a VerifyError with a reason',
+      setup: { verify: async () => { throw Object.assign(new Error('insufficient_funds'), { statusCode: 400, invalidReason: 'insufficient_funds' }) } },
+      metadata: () => paymentSubmittedMetadata(signedPayload()),
+      code: 'INSUFFICIENT_FUNDS',
+      verifies: true,
+      settles: false,
+    },
+    {
       name: 'settle returns success: false',
       setup: { settle: async () => ({ success: false, errorReason: 'transaction_failed', transaction: '', network: REQUIREMENT.network }) },
       metadata: () => paymentSubmittedMetadata(signedPayload()),
@@ -145,6 +154,21 @@ describe('createPaymentExecutor', () => {
       expect(m.inner.execute).not.toHaveBeenCalled()
     })
   }
+
+  it('keeps the facilitator reason code from a VerifyError in the receipt', async () => {
+    const m = merchant({ verify: async () => { throw Object.assign(new Error('x'), { statusCode: 400, invalidReason: 'insufficient_funds' }) } })
+    const task = await requirePayment(m)
+    const failed = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+    expect(getReceipts(meta(failed))[0].errorReason).toBe('insufficient_funds')
+  })
+
+  it('keeps the facilitator reason code from a SettleError in the receipt', async () => {
+    const m = merchant({ settle: async () => { throw Object.assign(new Error('x'), { statusCode: 400, errorReason: 'transaction_reverted' }) } })
+    const task = await requirePayment(m)
+    const failed = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+    expect(getPaymentError(meta(failed))).toBe('SETTLEMENT_FAILED')
+    expect(getReceipts(meta(failed))[0].errorReason).toBe('transaction_reverted')
+  })
 
   it('never leaks the facilitator error text into the receipt', async () => {
     const m = merchant({ settle: async () => { throw new Error('401 key=sk_live_secret') } })
