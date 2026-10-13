@@ -91,7 +91,7 @@ Failures come back as `payment-failed` with an error code (`INSUFFICIENT_FUNDS`,
 Limits of this example:
 - It speaks A2A v1.0 (`@a2a-js/sdk` 1.x), so A2A v0.3 clients are not accepted.
 - Tasks and quotes live in memory.
-- If the facilitator's settle response is lost or reports a failure, the merchant checks the token on chain (`authorizationState`, `src/a2a/eip3009.ts`). If the transfer landed, the work runs as paid. The transaction hash is found through the `AuthorizationUsed` event within the last 5,000 blocks, and left empty if it's older. Permit2 payments aren't checked this way.
+- If the facilitator's settle response is lost or reports a failure, the merchant checks the token on chain (`src/a2a/eip3009.ts`). The transfer only counts as this payment if the authorization is used and its `AuthorizationUsed` event is in a block no older than the quote, within the last 5,000 blocks. Then the work runs as paid. Anything it can't prove fails the task. An authorization used before the quote is a replay, and each authorization can pay for one task only. Permit2 payments aren't checked this way.
 
 ## Troubleshooting
 

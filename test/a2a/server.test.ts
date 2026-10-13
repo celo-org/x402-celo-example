@@ -313,7 +313,7 @@ describe('createPaymentExecutor', () => {
       expect(getReceipts(meta(done))).toEqual([
         { success: true, transaction: '0xfoundonchain', network: REQUIREMENT.network, payer: '0xbuyer' },
       ])
-      expect(findSettlement).toHaveBeenCalledWith(expect.objectContaining({ accepted: REQUIREMENT }), REQUIREMENT)
+      expect(findSettlement).toHaveBeenCalledWith(expect.objectContaining({ accepted: REQUIREMENT }), REQUIREMENT, { since: expect.any(Date) })
       expect(m.inner.execute).toHaveBeenCalledTimes(1)
     })
 
@@ -350,6 +350,65 @@ describe('createPaymentExecutor', () => {
       expect(failed.status?.state).toBe(TaskState.TASK_STATE_FAILED)
       expect(getReceipts(meta(failed))[0]).toMatchObject({ success: false, errorReason: 'facilitator_settle_error' })
       expect(m.inner.execute).not.toHaveBeenCalled()
+    })
+
+    it('does not unlock work by replaying an authorization that was already used', async () => {
+      // The facilitator's verify lets the replay through, settle then fails
+      // (nonce used), and the chain truthfully says the authorization is used.
+      const findSettlement = vi.fn(async () => ({ transaction: '0xoriginalpayment' }))
+      const m = merchant({
+        settle: async () => ({ success: false, errorReason: 'nonce_already_used', transaction: '', network: REQUIREMENT.network }),
+        findSettlement,
+      })
+      const replayed = paymentSubmittedMetadata(signedPayload())
+
+      const first = await submit(m, await requirePayment(m), replayed)
+      const second = await submit(m, await requirePayment(m), replayed)
+
+      expect([first, second].filter((t) => t.status?.state === TaskState.TASK_STATE_COMPLETED)).toHaveLength(1)
+      expect(m.inner.execute).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not unlock two tasks with one authorization submitted to both at once', async () => {
+      // Realistic facilitator: both verifies pass (nonce still unused), the first
+      // settle lands, the second fails because the nonce is now used.
+      let settled = false
+      const m = merchant({
+        settle: async () => {
+          await new Promise((r) => setTimeout(r, 5))
+          if (settled) return { success: false, errorReason: 'nonce_already_used', transaction: '', network: REQUIREMENT.network }
+          settled = true
+          return { success: true, transaction: '0xonce', network: REQUIREMENT.network, payer: '0xbuyer' }
+        },
+        findSettlement: async () => ({ transaction: '0xonce' }),
+      })
+      const shared = paymentSubmittedMetadata(signedPayload())
+      const [taskA, taskB] = [await requirePayment(m), await requirePayment(m)]
+
+      const results = await Promise.all([submit(m, taskA, shared), submit(m, taskB, shared)])
+
+      expect(results.filter((t) => t.status?.state === TaskState.TASK_STATE_COMPLETED)).toHaveLength(1)
+      const loser = results.find((t) => t.status?.state === TaskState.TASK_STATE_FAILED)!
+      expect(getPaymentError(meta(loser))).toBe('DUPLICATE_NONCE')
+      expect(m.inner.execute).toHaveBeenCalledTimes(1)
+    })
+
+    it('passes the quote time so the check can ignore transfers from before the quote', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        const findSettlement = vi.fn(async () => undefined)
+        const m = merchant({ settle: lost, findSettlement })
+        const quotedAt = Date.now()
+        const task = await requirePayment(m)
+        vi.setSystemTime(quotedAt + 3 * 60_000) // the buyer pays three minutes later
+
+        await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+
+        const [, , { since }] = findSettlement.mock.calls[0] as unknown as [unknown, unknown, { since: Date }]
+        expect(since.getTime()).toBe(quotedAt)
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('is not consulted when settlement succeeded or verification failed', async () => {
