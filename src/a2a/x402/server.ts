@@ -49,6 +49,9 @@ export interface PaymentExecutorOptions {
   resource: (ctx: RequestContext) => ResourceInfo
 }
 
+/** Quote lifetime when a requirement has no maxTimeoutSeconds; quotes never live longer than 12x this. */
+const DEFAULT_QUOTE_SECONDS = 300
+
 const TERMINAL_STATES = new Set<TaskState>([
   TaskState.TASK_STATE_COMPLETED,
   TaskState.TASK_STATE_FAILED,
@@ -66,18 +69,21 @@ export function errorCodeForInvalidReason(reason: string | undefined): X402Error
 }
 
 export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecutorOptions): AgentExecutor {
-  // Requirements quoted per task, kept until the task is paid, rejected or fails.
-  // In memory: a restart drops unpaid quotes and the buyer asks again. Quotes a
-  // buyer never answers stay until restart (as do the SDK's in-memory tasks);
-  // a production merchant should expire them after maxTimeoutSeconds.
-  const pending = new Map<string, PaymentRequirements[]>()
+  // Requirements quoted per task, kept until the task is paid, rejected or fails,
+  // or until the quote expires after its shortest maxTimeoutSeconds. Expired
+  // quotes cannot be paid and are swept on every new quote. In memory: a restart
+  // drops unpaid quotes and the buyer asks again.
+  const pending = new Map<string, { requirements: PaymentRequirements[]; expiresAt: number }>()
   const { resourceServer } = opts
 
   async function requestPayment(ctx: RequestContext, bus: ExecutionEventBus) {
     const options = typeof opts.accepts === 'function' ? opts.accepts(ctx) : opts.accepts
     const requirements = (await Promise.all(options.map((o) => resourceServer.buildPaymentRequirements(o)))).flat()
     const paymentRequired = await resourceServer.createPaymentRequiredResponse(requirements, opts.resource(ctx))
-    pending.set(ctx.taskId, requirements)
+    const now = Date.now()
+    for (const [taskId, quote] of pending) if (quote.expiresAt <= now) pending.delete(taskId)
+    const ttlSeconds = Math.min(...requirements.map((r) => r.maxTimeoutSeconds ?? DEFAULT_QUOTE_SECONDS), DEFAULT_QUOTE_SECONDS * 12)
+    pending.set(ctx.taskId, { requirements, expiresAt: now + ttlSeconds * 1000 })
     publishTask(ctx, bus, TaskState.TASK_STATE_INPUT_REQUIRED, 'Payment required.', paymentRequiredMetadata(paymentRequired))
   }
 
@@ -155,11 +161,15 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
       if (running) return running
 
       const status = getPaymentStatus(ctx.userMessage.metadata)
-      const requirements = pending.get(ctx.taskId)
+      const quote = pending.get(ctx.taskId)
+      const requirements = quote?.requirements
 
-      if (requirements && status === 'payment-submitted') {
+      if (quote && status === 'payment-submitted') {
         pending.delete(ctx.taskId) // claim the quote before the first await
-        const run = settleAndRun(ctx, bus, requirements).finally(() => inflight.delete(ctx.taskId))
+        if (Date.now() >= quote.expiresAt) {
+          return fail(ctx, bus, 'EXPIRED_PAYMENT', failureReceipt(quote.requirements[0]?.network ?? '', 'quote_expired'))
+        }
+        const run = settleAndRun(ctx, bus, quote.requirements).finally(() => inflight.delete(ctx.taskId))
         inflight.set(ctx.taskId, run)
         return run
       }

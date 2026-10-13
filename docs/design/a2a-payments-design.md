@@ -45,15 +45,15 @@ Phase 1 puts the reusable layer under `src/a2a/x402/`. Its layout matches `types
 | File | Purpose | Interface | Depends on |
 |---|---|---|---|
 | `src/a2a/x402/constants.ts` | Extension URI, metadata keys, status values, error codes | constants and types | none |
-| `src/a2a/x402/encoding.ts` | Read and write `x402.payment.*` on A2A message metadata, validated with `@x402/core` schemas. Serialization drops `undefined`/`null`. | `getPaymentStatus(msg)`, `getPaymentRequired(msg)`, `getPaymentPayload(msg)`, `getReceipts(msg)`, `paymentRequiredMetadata(pr)`, `paymentSubmittedMetadata(payload)`, `paymentCompletedMetadata(receipt)`, `paymentFailedMetadata(code, receipt)` | `@x402/core` |
+| `src/a2a/x402/encoding.ts` | Read and write `x402.payment.*` on A2A message metadata. Getters shape-check untrusted input and reject x402 v1 objects. Serialization drops `undefined`/`null`. | `getPaymentStatus(metadata)`, `getPaymentRequired(metadata)`, `getPaymentPayload(metadata)`, `getReceipts(metadata)`, `getPaymentError(metadata)`, `paymentRequiredMetadata(pr)`, `paymentSubmittedMetadata(payload)`, `paymentRejectedMetadata()`, `paymentCompletedMetadata(receipt)`, `paymentFailedMetadata(code, receipt)` | `@x402/core` |
 | `src/a2a/x402/server.ts` | Wraps any A2A `AgentExecutor` so it is paid before it runs | `createPaymentExecutor(inner: AgentExecutor, opts: { resourceServer: x402ResourceServer; accepts: PaymentOption[] or (ctx) => PaymentOption[]; resource: (ctx) => ResourceInfo }): AgentExecutor` | `@a2a-js/sdk/server`, `@x402/core/server`, `encoding` |
-| `src/a2a/x402/client.ts` | Wraps an A2A client so payment-required replies are paid automatically | `x402A2AClient(a2aClient, x402Client, opts?: { onPaymentRequired?: (pr) => boolean or Promise<boolean> })`, which provides `.sendMessage(params) → Promise<{ task, receipts }>` | `@a2a-js/sdk/client`, `@x402/core/client`, `encoding` |
+| `src/a2a/x402/client.ts` | Wraps an A2A client so payment-required replies are paid automatically | `x402A2AClient(a2aClient, x402Client, opts?: { onPaymentRequired?: (pr) => boolean or Promise<boolean> })`, which provides `.sendMessage(text, { taskId?, contextId? }) → Promise<{ result, receipts, paymentRequired? }>` | `@a2a-js/sdk/client`, `@x402/core/client`, `encoding` |
 | `src/a2a/x402/index.ts` | Public exports | | |
 | `src/a2a/merchant.ts` | Example merchant. Sells a "Celo network report" (latest block number, base fee, timestamp, read through the network RPC) for $0.01. Serves the agent card and A2A endpoint with the SDK's Express integration. | `npm run a2a:merchant` | `x402/*`, `config.ts`, `facilitator.ts` |
 | `src/a2a/buyer.ts` | Example buyer. Fetches the agent card, asks for the report, pays within its spend cap, and prints the result and explorer link. | `npm run a2a:buyer` | `x402/*`, `config.ts` |
 
 **Server executor behaviour (`createPaymentExecutor`):**
-- **No payment in the message:** build requirements (with `x402ResourceServer.buildPaymentRequirements`) and publish the task as input-required with `payment-required`. Store the requirements per `taskId` in memory.
+- **No payment in the message:** build requirements (with `x402ResourceServer.buildPaymentRequirements`) and publish the task as input-required with `payment-required`. Store the requirements per `taskId` in memory until the quote expires (its shortest `maxTimeoutSeconds`); an expired quote fails with `EXPIRED_PAYMENT`.
 - **`payment-submitted` on a known task:**
   1. Match `payload.accepted` against the stored requirements on scheme, network, asset, amount and payTo, using the core server's matching.
   2. Verify, then settle.
@@ -65,7 +65,7 @@ Phase 1 puts the reusable layer under `src/a2a/x402/`. Its layout matches `types
 1. Send the message.
 2. If the reply is a task with `payment-required`, parse the `PaymentRequired` and ask `onPaymentRequired` (default: pay).
 3. Create the payload with `x402Client.createPaymentPayload` (spend policy applies), then resend on the same `taskId` with `payment-submitted`.
-4. Return the final task and its receipts. If the buyer declines, send `payment-rejected`.
+4. Return the final task and its receipts. If the buyer declines, send `payment-rejected`. If the reply to the payment is lost, read the task with `getTask` instead of failing, so the buyer does not pay twice.
 
 ## Configuration
 

@@ -19,9 +19,11 @@ import {
   type Metadata,
 } from './encoding.js'
 
-/** The A2A client method used; a @a2a-js/sdk Client satisfies it. */
+/** The A2A client methods used; a @a2a-js/sdk Client satisfies it. */
 export interface A2AMessageSender {
   sendMessage(params: SendMessageRequest, options?: RequestOptions): Promise<Message | Task>
+  /** Used to recover the task when the reply to a payment is lost. */
+  getTask?(params: { tenant: string; id: string; historyLength?: number }, options?: RequestOptions): Promise<Task>
 }
 
 /** Signs payments; an @x402/core x402Client satisfies it. */
@@ -104,7 +106,22 @@ export function x402A2AClient(a2a: A2AMessageSender, signer: PaymentSigner, opts
         throw new PaymentDeclinedError(paymentRequired, error)
       }
 
-      const result = await send('Payment submitted.', sameTask, paymentSubmittedMetadata(payload))
+      let result: Message | Task
+      try {
+        result = await send('Payment submitted.', sameTask, paymentSubmittedMetadata(payload))
+      } catch (error) {
+        // The merchant may have settled before the reply was lost. Read the task
+        // instead of failing, so the caller does not pay again on a new task.
+        const recovered = await a2a.getTask?.({ tenant: '', id: first.id }, requestOptions).catch(() => undefined)
+        if (!recovered) {
+          throw new Error(
+            `Payment submitted for task ${first.id}, but the reply was lost (${(error as Error).message}). ` +
+              'The payment may have settled: check it before paying again.',
+            { cause: error },
+          )
+        }
+        result = recovered
+      }
       return { result, receipts: getReceipts(statusMetadata(result)), paymentRequired }
     },
   }

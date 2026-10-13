@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Role, TaskState, type Message, type Task } from '@a2a-js/sdk'
+import { ServerCallContext } from '@a2a-js/sdk/server'
 import type { PaymentRequired } from '@x402/core/types'
 import { merchant, REQUIREMENT, signedPayload } from './harness.js'
 import { PaymentDeclinedError, x402A2AClient } from '../../src/a2a/x402/client.js'
@@ -33,6 +34,40 @@ describe('x402A2AClient', () => {
     for (const [, options] of m.client.sendMessage.mock.calls) {
       expect(Object.values(options?.serviceParameters ?? {}).join()).toContain('a2a-x402')
     }
+  })
+
+  it('recovers the paid task with getTask when the payment reply is lost', async () => {
+    const m = merchant()
+    const flaky = {
+      sendMessage: vi.fn(async (params: Parameters<typeof m.client.sendMessage>[0], options?: Parameters<typeof m.client.sendMessage>[1]) => {
+        const result = await m.client.sendMessage(params, options)
+        // The merchant processed (and settled) the payment, but the response never arrives.
+        if (getPaymentStatus(params.message?.metadata) === 'payment-submitted') throw new Error('socket hang up')
+        return result
+      }),
+      getTask: vi.fn((params: { tenant: string; id: string; historyLength?: number }) =>
+        m.handler.getTask({ historyLength: undefined, ...params }, new ServerCallContext()),
+      ),
+    }
+
+    const { result, receipts } = await x402A2AClient(flaky, payer()).sendMessage('network report please')
+
+    expect(flaky.getTask).toHaveBeenCalledTimes(1)
+    expect(isTask(result) && result.status?.state).toBe(TaskState.TASK_STATE_COMPLETED)
+    expect(receipts[0]).toMatchObject({ success: true, transaction: '0xsettled' })
+    expect(m.resourceServer.settlePayment).toHaveBeenCalledTimes(1)
+  })
+
+  it('names the task when the payment reply is lost and the task cannot be fetched', async () => {
+    const m = merchant()
+    const flaky = {
+      sendMessage: vi.fn(async (params: Parameters<typeof m.client.sendMessage>[0], options?: Parameters<typeof m.client.sendMessage>[1]) => {
+        if (getPaymentStatus(params.message?.metadata) === 'payment-submitted') throw new Error('socket hang up')
+        return m.client.sendMessage(params, options)
+      }),
+    }
+
+    await expect(x402A2AClient(flaky, payer()).sendMessage('network report please')).rejects.toThrow(/task [0-9a-f-]{36}.*check it before paying again/)
   })
 
   it('returns a plain message reply without paying', async () => {

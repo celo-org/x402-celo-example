@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { TaskState, type Message, type Task } from '@a2a-js/sdk'
 import { ServerCallContext } from '@a2a-js/sdk/server'
 import { merchant, request, REQUIREMENT, signedPayload, userMessage } from './harness.js'
@@ -171,6 +171,18 @@ describe('createPaymentExecutor', () => {
     expect(getReceipts(meta(failed))[0].errorReason).toBe('transaction_reverted')
   })
 
+  it('drops a facilitator reason that is free text instead of a code', async () => {
+    const m = merchant({
+      settle: async () => {
+        throw Object.assign(new Error('x'), { statusCode: 500, errorReason: 'upstream said: key=sk_live_secret rejected' })
+      },
+    })
+    const task = await requirePayment(m)
+    const failed = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+    expect(getReceipts(meta(failed))[0].errorReason).toBe('facilitator_settle_error')
+    expect(JSON.stringify(failed)).not.toContain('sk_live_secret')
+  })
+
   it('never leaks the facilitator error text into the receipt', async () => {
     const m = merchant({ settle: async () => { throw new Error('401 key=sk_live_secret') } })
     const task = await requirePayment(m)
@@ -231,6 +243,58 @@ describe('createPaymentExecutor', () => {
     expect(getPaymentStatus(meta(failed))).toBe('payment-completed')
     expect(getReceipts(meta(failed))).toEqual([{ success: true, transaction: '0xsettled', network: REQUIREMENT.network, payer: '0xbuyer' }])
     expect(JSON.stringify(failed)).not.toContain('internal.example')
+  })
+
+  it('lets the paid executor use the whole event bus API (finished, on/off)', async () => {
+    const m = merchant()
+    const original = m.inner.execute.getMockImplementation()!
+    m.inner.execute.mockImplementationOnce(async (ctx, bus) => {
+      const listener = () => {}
+      bus.on('event', listener)
+      bus.off('event', listener)
+      await original(ctx, bus)
+      bus.finished()
+    })
+    const task = await requirePayment(m)
+
+    const done = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+
+    expect(done.status?.state).toBe(TaskState.TASK_STATE_COMPLETED)
+    expect(getPaymentStatus(meta(done))).toBe('payment-completed')
+  })
+
+  it('refuses to settle a quote after it expired (maxTimeoutSeconds)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const m = merchant()
+      const task = await requirePayment(m)
+      vi.setSystemTime(Date.now() + (REQUIREMENT.maxTimeoutSeconds + 1) * 1000)
+
+      const failed = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+
+      expect(failed.status?.state).toBe(TaskState.TASK_STATE_FAILED)
+      expect(getPaymentError(meta(failed))).toBe('EXPIRED_PAYMENT')
+      expect(getReceipts(meta(failed))[0]).toMatchObject({ success: false, errorReason: 'quote_expired', transaction: '' })
+      expect(m.resourceServer.verifyPayment).not.toHaveBeenCalled()
+      expect(m.inner.execute).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still settles a quote paid just before it expires', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const m = merchant()
+      const task = await requirePayment(m)
+      vi.setSystemTime(Date.now() + (REQUIREMENT.maxTimeoutSeconds - 1) * 1000)
+
+      const done = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+
+      expect(done.status?.state).toBe(TaskState.TASK_STATE_COMPLETED)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('fails the task without settling when the buyer rejects', async () => {
