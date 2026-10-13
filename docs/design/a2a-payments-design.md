@@ -36,7 +36,7 @@ This design follows `specs/transports-v2/a2a.md` and adds nothing to it.
    - **Failure:** state failed, `payment-failed`, an `x402.payment.error` code, and `x402.payment.receipts: [{ success: false, errorReason, network, transaction: "" }]`.
    - **Rejection:** if the buyer declines, it sends `payment-rejected` and the merchant fails the task.
 
-**A2A version.** `@a2a-js/sdk` 1.3 implements A2A v1.0: the `A2A-Extensions` header and `TASK_STATE_*` states. The transport spec's examples use A2A v0.3 terms (`X-A2A-Extensions`, `input-required`). The `x402.payment.*` metadata is the same in both versions, so the implementation targets the SDK's v1.0 API. The upstream PR adds a note to the transport spec covering both versions.
+**A2A version.** `@a2a-js/sdk` 1.3 implements A2A v1.0: the `A2A-Extensions` header and `TASK_STATE_*` states. The transport spec's examples use A2A v0.3 terms (`X-A2A-Extensions`, `message/send`, `input-required`). The merchant serves both: `src/a2a/app.ts` enables the SDK's v0.3 compatibility layer on the agent card and JSON-RPC endpoint, and the agent card lists a v0.3 mirror of its JSON-RPC interface. The `x402.payment.*` metadata is the same in both versions. The upstream PR adds a note to the transport spec covering both versions.
 
 ## Components
 

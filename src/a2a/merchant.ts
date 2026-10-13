@@ -4,15 +4,13 @@
  * Run:  npm run a2a:merchant
  * Card: http://localhost:4000/.well-known/agent-card.json
  */
-import express from 'express'
 import { A2A_PROTOCOL_VERSION, AGENT_CARD_PATH, type AgentCard } from '@a2a-js/sdk'
-import { DefaultRequestHandler, InMemoryTaskStore } from '@a2a-js/sdk/server'
-import { agentCardHandler, jsonRpcHandler, UserBuilder } from '@a2a-js/sdk/server/express'
 import { x402ResourceServer } from '@x402/core/server'
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { createPublicClient, getAddress, http } from 'viem'
 import { A2A_PORT, a2aPricing, CFG, MERCHANT_URL } from '../config.js'
 import { facilitator } from '../facilitator.js'
+import { createA2AApp } from './app.js'
 import { eip3009SettlementFinder } from './eip3009.js'
 import { CeloReportExecutor } from './report.js'
 import { createPaymentExecutor, X402_EXTENSION_URI } from './x402/index.js'
@@ -71,11 +69,8 @@ const executor = createPaymentExecutor(new CeloReportExecutor(), {
   // If the facilitator's settle response is lost, check the token on chain before failing the task.
   findSettlement: eip3009SettlementFinder(createPublicClient({ transport: http(CFG.rpc) })),
 })
-const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), executor)
-
-const app = express()
-app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }))
-app.use(jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }))
+// Serves A2A v1.0 and v0.3 clients on the same endpoint.
+const { app } = createA2AApp(card, executor)
 app.listen(A2A_PORT, (error) => {
   if (error) {
     console.error(`Cannot listen on port ${A2A_PORT}: ${error.message}`)

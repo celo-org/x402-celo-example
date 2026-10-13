@@ -184,5 +184,13 @@ export function merchant(opts: FakeServerOptions = {}) {
       return handler.sendMessage(params, new ServerCallContext({ requestedExtensions }))
     }),
   }
-  return { resourceServer, inner, handler, send, client }
+  return { resourceServer, inner, handler, send, client, executor }
+}
+
+/** A test card for a merchant listening at `url`, declaring the required x402 extension. */
+export function cardAt(url: string): AgentCard {
+  return {
+    ...CARD,
+    supportedInterfaces: [{ url, protocolBinding: 'JSONRPC', tenant: '', protocolVersion: A2A_PROTOCOL_VERSION }],
+  }
 }
