@@ -18,7 +18,7 @@ import {
   type RequestContext,
 } from '@a2a-js/sdk/server'
 import type { x402ResourceServer } from '@x402/core/server'
-import type { PaymentRequirements, ResourceInfo, SettleResponse } from '@x402/core/types'
+import type { PaymentPayload, PaymentRequirements, ResourceInfo, SettleResponse } from '@x402/core/types'
 import { X402_EXTENSION_URI, type X402ErrorCode } from './constants.js'
 import {
   failureReceipt,
@@ -47,10 +47,44 @@ export interface PaymentExecutorOptions {
   accepts: PaymentOption[] | ((ctx: RequestContext) => PaymentOption[])
   /** Describes what is being sold; becomes PaymentRequired.resource. */
   resource: (ctx: RequestContext) => ResourceInfo
+  /**
+   * Optional on-chain check, called only when settlement threw or reported
+   * failure. Return the transaction if this payment's transfer landed at or
+   * after `since` (when the quote was issued), or undefined if it did not or
+   * that cannot be proven. Throwing counts as "did not land". A transfer from
+   * before the quote must not count: that is a replayed authorization, not this
+   * payment. See eip3009.ts for an EIP-3009 version.
+   */
+  findSettlement?: (
+    payload: PaymentPayload,
+    requirement: PaymentRequirements,
+    context: { since: Date },
+  ) => Promise<{ transaction: string } | undefined>
+}
+
+/** How long a submitted authorization stays claimed: longer than any quote can live. */
+const CLAIM_SECONDS = 2 * 60 * 60
+
+/**
+ * Identifies the authorization a payment spends: its signer and nonce for
+ * EIP-3009 and Permit2 payloads, else the signature. One authorization can pay
+ * for one task only.
+ */
+function authorizationKey(payload: PaymentPayload): string {
+  const inner = payload.payload as Record<string, { from?: unknown; nonce?: unknown } | unknown>
+  const auth = (inner.authorization ?? inner.permit2Authorization) as { from?: unknown; nonce?: unknown } | undefined
+  const id = auth?.from && auth?.nonce ? `${auth.from}:${auth.nonce}` : JSON.stringify(inner.signature ?? inner)
+  return `${payload.accepted.network}:${payload.accepted.asset}:${id}`.toLowerCase()
 }
 
 /** Quote lifetime when a requirement has no maxTimeoutSeconds; quotes never live longer than 12x this. */
 const DEFAULT_QUOTE_SECONDS = 300
+
+interface Quote {
+  requirements: PaymentRequirements[]
+  issuedAt: number
+  expiresAt: number
+}
 
 const TERMINAL_STATES = new Set<TaskState>([
   TaskState.TASK_STATE_COMPLETED,
@@ -73,7 +107,11 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
   // or until the quote expires after its shortest maxTimeoutSeconds. Expired
   // quotes cannot be paid and are swept on every new quote. In memory: a restart
   // drops unpaid quotes and the buyer asks again.
-  const pending = new Map<string, { requirements: PaymentRequirements[]; expiresAt: number }>()
+  const pending = new Map<string, Quote>()
+  // Authorizations already submitted for some task, with when the claim lapses.
+  // Checked before verify, so one signed authorization never unlocks two tasks,
+  // even when both are submitted at once.
+  const claimed = new Map<string, number>()
   const { resourceServer } = opts
 
   async function requestPayment(ctx: RequestContext, bus: ExecutionEventBus) {
@@ -82,8 +120,9 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
     const paymentRequired = await resourceServer.createPaymentRequiredResponse(requirements, opts.resource(ctx))
     const now = Date.now()
     for (const [taskId, quote] of pending) if (quote.expiresAt <= now) pending.delete(taskId)
+    for (const [key, until] of claimed) if (until <= now) claimed.delete(key)
     const ttlSeconds = Math.min(...requirements.map((r) => r.maxTimeoutSeconds ?? DEFAULT_QUOTE_SECONDS), DEFAULT_QUOTE_SECONDS * 12)
-    pending.set(ctx.taskId, { requirements, expiresAt: now + ttlSeconds * 1000 })
+    pending.set(ctx.taskId, { requirements, issuedAt: now, expiresAt: now + ttlSeconds * 1000 })
     publishTask(ctx, bus, TaskState.TASK_STATE_INPUT_REQUIRED, 'Payment required.', paymentRequiredMetadata(paymentRequired))
   }
 
@@ -92,7 +131,18 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
     publishTask(ctx, bus, TaskState.TASK_STATE_FAILED, `Payment failed: ${code}.`, paymentFailedMetadata(code, receipt))
   }
 
-  async function settleAndRun(ctx: RequestContext, bus: ExecutionEventBus, requirements: PaymentRequirements[]) {
+  async function reconcile(payload: PaymentPayload, requirement: PaymentRequirements, since: Date) {
+    if (!opts.findSettlement) return undefined
+    try {
+      return await opts.findSettlement(payload, requirement, { since })
+    } catch (error) {
+      console.error('[x402] on-chain settlement check failed:', (error as Error).message)
+      return undefined
+    }
+  }
+
+  async function settleAndRun(ctx: RequestContext, bus: ExecutionEventBus, quote: Quote) {
+    const { requirements } = quote
     const network = requirements[0]?.network ?? ''
     const payload = getPaymentPayload(ctx.userMessage.metadata)
     if (!payload) return fail(ctx, bus, 'INVALID_SIGNATURE', failureReceipt(network, 'invalid_payment_payload'))
@@ -108,8 +158,16 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
       )
     }
 
+    const key = authorizationKey(payload)
+    if (claimed.has(key)) {
+      return fail(ctx, bus, 'DUPLICATE_NONCE', failureReceipt(matched.network, 'authorization_already_submitted'))
+    }
+    claimed.set(key, Date.now() + CLAIM_SECONDS * 1000)
+
+    let payer: string | undefined
     try {
       const verified = await resourceServer.verifyPayment(payload, matched)
+      payer = verified.payer
       if (!verified.isValid) {
         const reason = verified.invalidReason ?? 'invalid_payment'
         return fail(ctx, bus, errorCodeForInvalidReason(reason), failureReceipt(matched.network, reason))
@@ -129,10 +187,18 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
     } catch (error) {
       console.error('[x402] settle failed:', (error as Error).message)
       const reason = reasonCode(error, 'errorReason') ?? 'facilitator_settle_error'
-      return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(matched.network, reason))
+      receipt = failureReceipt(matched.network, reason)
     }
     if (!receipt.success) {
-      return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(receipt.network ?? matched.network, receipt.errorReason ?? 'settlement_failed'))
+      // The facilitator may have broadcast the transfer before its response was
+      // lost or reported a failure. Check the chain before telling the buyer
+      // nothing happened; any doubt fails closed.
+      const landed = await reconcile(payload, matched, new Date(quote.issuedAt))
+      if (!landed) {
+        return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(receipt.network ?? matched.network, receipt.errorReason ?? 'settlement_failed'))
+      }
+      console.warn(`[x402] settle reported failure but the transfer is on chain: ${landed.transaction || '(tx not found)'}`)
+      receipt = { success: true, transaction: landed.transaction, network: matched.network, ...(payer ? { payer } : {}) }
     }
 
     // Paid. If the work then fails, the buyer still gets the receipt as proof of payment.
@@ -169,7 +235,7 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
         if (Date.now() >= quote.expiresAt) {
           return fail(ctx, bus, 'EXPIRED_PAYMENT', failureReceipt(quote.requirements[0]?.network ?? '', 'quote_expired'))
         }
-        const run = settleAndRun(ctx, bus, quote.requirements).finally(() => inflight.delete(ctx.taskId))
+        const run = settleAndRun(ctx, bus, quote).finally(() => inflight.delete(ctx.taskId))
         inflight.set(ctx.taskId, run)
         return run
       }

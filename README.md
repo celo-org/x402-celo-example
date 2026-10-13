@@ -91,7 +91,7 @@ Failures come back as `payment-failed` with an error code (`INSUFFICIENT_FUNDS`,
 Limits of this example:
 - It speaks A2A v1.0 (`@a2a-js/sdk` 1.x), so A2A v0.3 clients are not accepted.
 - Tasks and quotes live in memory.
-- If the facilitator's settle response is lost after the transfer went through, the task is reported as failed. Reconcile on chain using the payer and nonce in the merchant log.
+- If the facilitator's settle response is lost or reports a failure, the merchant checks the token on chain (`src/a2a/eip3009.ts`). The transfer only counts as this payment if the authorization is used and its `AuthorizationUsed` event is in a block no older than the quote, within the last 5,000 blocks. Then the work runs as paid. Anything it can't prove fails the task. An authorization used before the quote is a replay, and each authorization can pay for one task only. Permit2 payments aren't checked this way.
 
 ## Troubleshooting
 
@@ -119,5 +119,6 @@ Limits of this example:
 | `src/a2a/merchant.ts` | Merchant agent selling a Celo network report |
 | `src/a2a/buyer.ts` | Buyer agent that pays for it |
 | `src/a2a/report.ts` | The paid work: reads the latest Celo block |
+| `src/a2a/eip3009.ts` | On-chain check used when a settle response is lost |
 | `src/a2a/demo.ts` | Runs merchant and buyer end to end |
 | `test/a2a/` | Offline tests of the payment layer |

@@ -10,9 +10,10 @@ import { DefaultRequestHandler, InMemoryTaskStore } from '@a2a-js/sdk/server'
 import { agentCardHandler, jsonRpcHandler, UserBuilder } from '@a2a-js/sdk/server/express'
 import { x402ResourceServer } from '@x402/core/server'
 import { ExactEvmScheme } from '@x402/evm/exact/server'
-import { getAddress } from 'viem'
+import { createPublicClient, getAddress, http } from 'viem'
 import { A2A_PORT, a2aPricing, CFG, MERCHANT_URL } from '../config.js'
 import { facilitator } from '../facilitator.js'
+import { eip3009SettlementFinder } from './eip3009.js'
 import { CeloReportExecutor } from './report.js'
 import { createPaymentExecutor, X402_EXTENSION_URI } from './x402/index.js'
 
@@ -67,6 +68,8 @@ const executor = createPaymentExecutor(new CeloReportExecutor(), {
   resourceServer,
   accepts: [{ scheme: 'exact', network: CFG.caip2, payTo, price: A2A_PRICE }],
   resource: () => ({ url: `${MERCHANT_URL}/#celo-network-report`, description: 'Celo network report', mimeType: 'application/json' }),
+  // If the facilitator's settle response is lost, check the token on chain before failing the task.
+  findSettlement: eip3009SettlementFinder(createPublicClient({ transport: http(CFG.rpc) })),
 })
 const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), executor)
 
