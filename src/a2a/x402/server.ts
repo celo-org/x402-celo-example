@@ -19,7 +19,7 @@ import {
 } from '@a2a-js/sdk/server'
 import type { x402ResourceServer } from '@x402/core/server'
 import type { PaymentPayload, PaymentRequirements, ResourceInfo, SettleResponse } from '@x402/core/types'
-import { X402_EXTENSION_URI, type X402ErrorCode } from './constants.js'
+import { X402_EXTENSION_URI, X402_METADATA_KEYS, type X402ErrorCode } from './constants.js'
 import {
   failureReceipt,
   getPaymentPayload,
@@ -145,7 +145,12 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
     const { requirements } = quote
     const network = requirements[0]?.network ?? ''
     const payload = getPaymentPayload(ctx.userMessage.metadata)
-    if (!payload) return fail(ctx, bus, 'INVALID_SIGNATURE', failureReceipt(network, 'invalid_payment_payload'))
+    if (!payload) {
+      // Name the cause when a client sends another x402 version (e.g. a2a-x402's v1 payloads).
+      const raw = ctx.userMessage.metadata?.[X402_METADATA_KEYS.payload] as { x402Version?: unknown } | undefined
+      const reason = typeof raw?.x402Version === 'number' && raw.x402Version !== 2 ? 'unsupported_x402_version' : 'invalid_payment_payload'
+      return fail(ctx, bus, 'INVALID_SIGNATURE', failureReceipt(network, reason))
+    }
 
     const matched = resourceServer.findMatchingRequirements(requirements, payload)
     if (!matched) {

@@ -66,6 +66,8 @@ merchant  runs the work only after settlement
           task completed + report + x402.payment.receipts          -> buyer
 ```
 
+The merchant serves A2A v1.0 clients and, through the SDK's compatibility layer, A2A v0.3 clients (`message/send`, the `X-A2A-Extensions` header), the A2A version the x402 transport spec's examples use. The `x402.payment.*` metadata is the same in both. Payments must be x402 **v2**. Clients that still send x402 v1 payloads, such as Google's `a2a-x402` today, get `payment-failed` with `errorReason: unsupported_x402_version`.
+
 Run it with the same `.env` as above:
 
 ```bash
@@ -89,7 +91,6 @@ The payment layer in `src/a2a/x402/` works with any A2A agent:
 Failures come back as `payment-failed` with an error code (`INSUFFICIENT_FUNDS`, `EXPIRED_PAYMENT`, `INVALID_SIGNATURE`, `SETTLEMENT_FAILED`, …) and a receipt. A buyer that declines gets `payment-rejected`. If the paid work fails after settlement, the task fails but still carries `payment-completed` and the receipt, as proof of payment. A second payment submitted for the same task is not settled again. A quote can only be paid within its `maxTimeoutSeconds` (5 minutes by default); after that it fails with `EXPIRED_PAYMENT`. If the reply to a payment is lost, the client reads the task back instead of failing, so the buyer does not pay twice. The tests run offline: `npm test`.
 
 Limits of this example:
-- It speaks A2A v1.0 (`@a2a-js/sdk` 1.x), so A2A v0.3 clients are not accepted.
 - Tasks and quotes live in memory.
 - If the facilitator's settle response is lost or reports a failure, the merchant checks the token on chain (`src/a2a/eip3009.ts`). The transfer only counts as this payment if the authorization is used and its `AuthorizationUsed` event is in a block no older than the quote, within the last 5,000 blocks. Then the work runs as paid. Anything it can't prove fails the task. An authorization used before the quote is a replay, and each authorization can pay for one task only. Permit2 payments aren't checked this way.
 
@@ -117,6 +118,7 @@ Limits of this example:
 | `src/check.ts` | Keyless preflight |
 | `src/a2a/x402/` | x402 payments for A2A agents: metadata encoding, payment-gated executor, paying client |
 | `src/a2a/merchant.ts` | Merchant agent selling a Celo network report |
+| `src/a2a/app.ts` | HTTP wiring: agent card and JSON-RPC for A2A v1.0 and v0.3 clients |
 | `src/a2a/buyer.ts` | Buyer agent that pays for it |
 | `src/a2a/report.ts` | The paid work: reads the latest Celo block |
 | `src/a2a/eip3009.ts` | On-chain check used when a settle response is lost |
