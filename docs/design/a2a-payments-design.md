@@ -92,7 +92,7 @@ The transport spec only gives example error codes. These come from the establish
 |---|---|---|
 | `payload.accepted` matches no stored requirement | `payment-failed`, failure receipt, and `NETWORK_MISMATCH` if the network differs, else `INVALID_AMOUNT` | "payment didn't match the merchant's terms" |
 | Verify returns invalid | `payment-failed`, with the facilitator's `invalidReason` mapped to `INVALID_SIGNATURE`, `EXPIRED_PAYMENT`, `INSUFFICIENT_FUNDS` or `DUPLICATE_NONCE` (anything else becomes `INVALID_SIGNATURE`) and the raw reason kept in the receipt's `errorReason` | the reason, plus the matching README tip |
-| Facilitator 401 / 402 / 429 / network error | `payment-failed`, `SETTLEMENT_FAILED`; the cause is logged server-side and the API key is never echoed | "settlement failed", with a pointer to the troubleshooting table |
+| Facilitator 401 / 402 / 429 / network error | The merchant first checks the chain (`findSettlement`): if the transfer landed, the task completes with a receipt. Otherwise `payment-failed`, `SETTLEMENT_FAILED`. The cause is logged server-side and the API key is never echoed | "settlement failed", with a pointer to the troubleshooting table |
 | Unknown or expired `taskId` on submit | A2A task-not-found error | the error |
 | Amount above the buyer cap or unsupported asset | none (the buyer declines and sends `payment-rejected`) | "declined: above spend cap" |
 

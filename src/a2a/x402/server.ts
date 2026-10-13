@@ -18,7 +18,7 @@ import {
   type RequestContext,
 } from '@a2a-js/sdk/server'
 import type { x402ResourceServer } from '@x402/core/server'
-import type { PaymentRequirements, ResourceInfo, SettleResponse } from '@x402/core/types'
+import type { PaymentPayload, PaymentRequirements, ResourceInfo, SettleResponse } from '@x402/core/types'
 import { X402_EXTENSION_URI, type X402ErrorCode } from './constants.js'
 import {
   failureReceipt,
@@ -47,6 +47,13 @@ export interface PaymentExecutorOptions {
   accepts: PaymentOption[] | ((ctx: RequestContext) => PaymentOption[])
   /** Describes what is being sold; becomes PaymentRequired.resource. */
   resource: (ctx: RequestContext) => ResourceInfo
+  /**
+   * Optional on-chain check, called only when settlement threw or reported
+   * failure. Return the transaction if the payment's transfer did land (use ''
+   * when it landed but the hash is unknown), or undefined if it did not.
+   * Throwing counts as "did not land". See eip3009.ts for an EIP-3009 version.
+   */
+  findSettlement?: (payload: PaymentPayload, requirement: PaymentRequirements) => Promise<{ transaction: string } | undefined>
 }
 
 /** Quote lifetime when a requirement has no maxTimeoutSeconds; quotes never live longer than 12x this. */
@@ -92,6 +99,16 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
     publishTask(ctx, bus, TaskState.TASK_STATE_FAILED, `Payment failed: ${code}.`, paymentFailedMetadata(code, receipt))
   }
 
+  async function reconcile(payload: PaymentPayload, requirement: PaymentRequirements) {
+    if (!opts.findSettlement) return undefined
+    try {
+      return await opts.findSettlement(payload, requirement)
+    } catch (error) {
+      console.error('[x402] on-chain settlement check failed:', (error as Error).message)
+      return undefined
+    }
+  }
+
   async function settleAndRun(ctx: RequestContext, bus: ExecutionEventBus, requirements: PaymentRequirements[]) {
     const network = requirements[0]?.network ?? ''
     const payload = getPaymentPayload(ctx.userMessage.metadata)
@@ -108,8 +125,10 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
       )
     }
 
+    let payer: string | undefined
     try {
       const verified = await resourceServer.verifyPayment(payload, matched)
+      payer = verified.payer
       if (!verified.isValid) {
         const reason = verified.invalidReason ?? 'invalid_payment'
         return fail(ctx, bus, errorCodeForInvalidReason(reason), failureReceipt(matched.network, reason))
@@ -129,10 +148,18 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
     } catch (error) {
       console.error('[x402] settle failed:', (error as Error).message)
       const reason = reasonCode(error, 'errorReason') ?? 'facilitator_settle_error'
-      return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(matched.network, reason))
+      receipt = failureReceipt(matched.network, reason)
     }
     if (!receipt.success) {
-      return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(receipt.network ?? matched.network, receipt.errorReason ?? 'settlement_failed'))
+      // The facilitator may have broadcast the transfer before its response was
+      // lost or reported a failure. Check the chain before telling the buyer
+      // nothing happened; any doubt fails closed.
+      const landed = await reconcile(payload, matched)
+      if (!landed) {
+        return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(receipt.network ?? matched.network, receipt.errorReason ?? 'settlement_failed'))
+      }
+      console.warn(`[x402] settle reported failure but the transfer is on chain: ${landed.transaction || '(tx not found)'}`)
+      receipt = { success: true, transaction: landed.transaction, network: matched.network, ...(payer ? { payer } : {}) }
     }
 
     // Paid. If the work then fails, the buyer still gets the receipt as proof of payment.

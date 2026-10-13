@@ -21,7 +21,7 @@ import {
   type AgentExecutor,
 } from '@a2a-js/sdk/server'
 import type { PaymentPayload, PaymentRequirements, SettleResponse, VerifyResponse } from '@x402/core/types'
-import { createPaymentExecutor, type PaymentResourceServer } from '../../src/a2a/x402/server.js'
+import { createPaymentExecutor, type PaymentExecutorOptions, type PaymentResourceServer } from '../../src/a2a/x402/server.js'
 import { X402_EXTENSION_URI } from '../../src/a2a/x402/constants.js'
 
 export const REQUIREMENT: PaymentRequirements = {
@@ -48,6 +48,7 @@ export function signedPayload(accepted: PaymentRequirements = REQUIREMENT): Paym
 export interface FakeServerOptions {
   verify?: () => Promise<VerifyResponse>
   settle?: () => Promise<SettleResponse>
+  findSettlement?: PaymentExecutorOptions['findSettlement']
 }
 
 export function fakeResourceServer(opts: FakeServerOptions = {}) {
@@ -169,6 +170,7 @@ export function merchant(opts: FakeServerOptions = {}) {
     resourceServer,
     accepts: [{ scheme: 'exact', network: REQUIREMENT.network, payTo: REQUIREMENT.payTo, price: '$0.01' }],
     resource: () => ({ url: 'a2a://test-merchant/report', description: 'Celo network report', mimeType: 'text/plain' }),
+    findSettlement: opts.findSettlement,
   })
   const handler = new DefaultRequestHandler(CARD, new InMemoryTaskStore(), executor)
   // Real clients activate the required extension with the A2A-Extensions header.

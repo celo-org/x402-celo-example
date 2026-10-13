@@ -297,6 +297,73 @@ describe('createPaymentExecutor', () => {
     }
   })
 
+  describe('reconciling a lost settle response (findSettlement)', () => {
+    const lost = async (): Promise<never> => {
+      throw new Error('socket hang up')
+    }
+
+    it('completes the task when the transfer is found on chain after settle threw', async () => {
+      const findSettlement = vi.fn(async () => ({ transaction: '0xfoundonchain' }))
+      const m = merchant({ settle: lost, findSettlement })
+      const task = await requirePayment(m)
+
+      const done = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+
+      expect(done.status?.state).toBe(TaskState.TASK_STATE_COMPLETED)
+      expect(getReceipts(meta(done))).toEqual([
+        { success: true, transaction: '0xfoundonchain', network: REQUIREMENT.network, payer: '0xbuyer' },
+      ])
+      expect(findSettlement).toHaveBeenCalledWith(expect.objectContaining({ accepted: REQUIREMENT }), REQUIREMENT)
+      expect(m.inner.execute).toHaveBeenCalledTimes(1)
+    })
+
+    it('completes the task when settle reported failure but the transfer landed', async () => {
+      const m = merchant({
+        settle: async () => ({ success: false, errorReason: 'timeout', transaction: '', network: REQUIREMENT.network }),
+        findSettlement: async () => ({ transaction: '0xlanded' }),
+      })
+      const task = await requirePayment(m)
+
+      const done = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+
+      expect(done.status?.state).toBe(TaskState.TASK_STATE_COMPLETED)
+      expect(getReceipts(meta(done))[0]).toMatchObject({ success: true, transaction: '0xlanded' })
+    })
+
+    it('fails as before when the transfer is not on chain', async () => {
+      const m = merchant({ settle: lost, findSettlement: async () => undefined })
+      const task = await requirePayment(m)
+
+      const failed = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+
+      expect(failed.status?.state).toBe(TaskState.TASK_STATE_FAILED)
+      expect(getPaymentError(meta(failed))).toBe('SETTLEMENT_FAILED')
+      expect(m.inner.execute).not.toHaveBeenCalled()
+    })
+
+    it('fails closed when the on-chain check itself errors', async () => {
+      const m = merchant({ settle: lost, findSettlement: async () => { throw new Error('rpc down') } })
+      const task = await requirePayment(m)
+
+      const failed = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+
+      expect(failed.status?.state).toBe(TaskState.TASK_STATE_FAILED)
+      expect(getReceipts(meta(failed))[0]).toMatchObject({ success: false, errorReason: 'facilitator_settle_error' })
+      expect(m.inner.execute).not.toHaveBeenCalled()
+    })
+
+    it('is not consulted when settlement succeeded or verification failed', async () => {
+      const findSettlement = vi.fn(async () => ({ transaction: '0xnever' }))
+      const ok = merchant({ findSettlement })
+      await submit(ok, await requirePayment(ok), paymentSubmittedMetadata(signedPayload()))
+      const invalid = merchant({ findSettlement, verify: async () => ({ isValid: false, invalidReason: 'insufficient_funds' }) })
+      await submit(invalid, await requirePayment(invalid), paymentSubmittedMetadata(signedPayload()))
+
+      expect(findSettlement).not.toHaveBeenCalled()
+      expect(invalid.inner.execute).not.toHaveBeenCalled()
+    })
+  })
+
   it('fails the task without settling when the buyer rejects', async () => {
     const m = merchant()
     const task = await requirePayment(m)
