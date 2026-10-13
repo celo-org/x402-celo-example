@@ -4,7 +4,15 @@
  * verify/settle results each test controls. No network, no HTTP.
  */
 import { vi } from 'vitest'
-import { A2A_PROTOCOL_VERSION, Role, TaskState, type AgentCard, type Message, type SendMessageRequest } from '@a2a-js/sdk'
+import {
+  A2A_PROTOCOL_VERSION,
+  HTTP_EXTENSION_HEADER,
+  Role,
+  TaskState,
+  type AgentCard,
+  type Message,
+  type SendMessageRequest,
+} from '@a2a-js/sdk'
 import {
   AgentEvent,
   DefaultRequestHandler,
@@ -166,5 +174,13 @@ export function merchant(opts: FakeServerOptions = {}) {
   // Real clients activate the required extension with the A2A-Extensions header.
   const send = (params: SendMessageRequest) =>
     handler.sendMessage(params, new ServerCallContext({ requestedExtensions: [X402_EXTENSION_URI] }))
-  return { resourceServer, inner, handler, send }
+  // An A2A client whose headers are honoured like the HTTP transport does.
+  const client = {
+    sendMessage: vi.fn((params: SendMessageRequest, options?: { serviceParameters?: Record<string, string> }) => {
+      const header = options?.serviceParameters?.[HTTP_EXTENSION_HEADER] ?? ''
+      const requestedExtensions = header.split(',').map((s) => s.trim()).filter(Boolean)
+      return handler.sendMessage(params, new ServerCallContext({ requestedExtensions }))
+    }),
+  }
+  return { resourceServer, inner, handler, send, client }
 }
