@@ -51,11 +51,50 @@ Set `X402_NETWORK=mainnet` and use a funded wallet. Test on Celo Sepolia first.
 | Celo mainnet | 42220 | `0xcebA9300f2b948710d2653dD7B07f33A8B32118C` | `https://api.x402.celo.org` |
 | Celo Sepolia | 11142220 | `0x01C5C0122039549AD1493B8220cABEdD739BC44E` | `https://api.x402.sepolia.celo.org` |
 
+## Agent-to-agent (A2A) payments
+
+The same payment, between two AI agents over the [A2A protocol](https://a2a-protocol.org). A merchant agent sells a Celo network report (latest block, base fee, timestamp) for $0.01. A buyer agent asks for it, pays automatically within a spend cap, and gets the report and the settlement transaction. It follows the x402 v2 [A2A transport](https://github.com/x402-foundation/x402/blob/main/specs/transports-v2/a2a.md), using [`@a2a-js/sdk`](https://github.com/a2aproject/a2a-js).
+
+```
+buyer     message "network report please"                        -> merchant
+merchant  task input-required, x402.payment.status=payment-required
+          + x402.payment.required (price, token, payTo)           -> buyer
+buyer     signs an EIP-3009 authorization (off-chain, no gas)
+          message on the same task, payment-submitted + payload   -> merchant
+merchant  /verify, /settle (API key) -> Celo facilitator -> tokens move buyer -> merchant
+merchant  runs the work only after settlement
+          task completed + report + x402.payment.receipts          -> buyer
+```
+
+Run it with the same `.env` as above:
+
+```bash
+npm run a2a:demo       # starts the merchant, runs the buyer, prints the report and the tx; exits 1 if nothing settled
+# or in two terminals:
+npm run a2a:merchant   # agent card at http://localhost:4000/.well-known/agent-card.json
+npm run a2a:buyer
+```
+
+| Variable | Default | What |
+|---|---|---|
+| `X402_TOKEN` | `USDC` | Token to charge in. On mainnet also `USDT` (USD₮) or `USAT` (USA₮, the US Dollar-backed stablecoin issued by Anchorage Digital Bank, N.A., and supported by Tether). Addresses and EIP-712 domains come from `@x402/evm`'s built-in Celo assets. |
+| `BUYER_MAX_PER_PAYMENT` | `$0.05` | The buyer refuses to sign anything above this. |
+| `A2A_PORT` / `MERCHANT_URL` | `4000` / `http://localhost:4000` | Where the merchant agent listens. |
+
+The payment layer in `src/a2a/x402/` works with any A2A agent:
+
+- `createPaymentExecutor(executor, { resourceServer, accepts, resource })` wraps an A2A `AgentExecutor`. The wrapped executor runs only after the payment has settled.
+- `x402A2AClient(a2aClient, x402Client)` pays `payment-required` tasks for a buyer.
+
+Failures come back as `payment-failed` with an error code (`INSUFFICIENT_FUNDS`, `EXPIRED_PAYMENT`, `INVALID_SIGNATURE`, `SETTLEMENT_FAILED`, …) and a receipt. The tests run offline: `npm test`.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `No default asset configured for network eip155:42220` at request time | A bare `"$0.01"` price. Celo is not in the packages' default-asset table, so name the token and its EIP-712 domain explicitly, as `src/seller.ts` does. |
+| `No default asset configured for network eip155:42220` at request time | `@x402/*` packages older than 2.25 don't include Celo's tokens. Upgrade, or name the token and its EIP-712 domain explicitly, as `src/seller.ts` does. |
+| A2A buyer prints `INSUFFICIENT_FUNDS` | The buyer wallet has too little of the token. Fund it from the [Circle faucet](https://faucet.circle.com) (Celo Sepolia USDC). |
+| A2A buyer prints `Payment declined: ... spendControls` | The price is above `BUYER_MAX_PER_PAYMENT`. |
 | `/verify` works but `/settle` returns `401 Missing X-API-Key` | The key is only checked on settlement. Set `X402_API_KEY`. |
 | `/settle` returns `402` | Out of facilitator credits. Top up on the dashboard. |
 | `/settle` returns `429` | Free-tier rate limit reached. |
@@ -69,5 +108,11 @@ Set `X402_NETWORK=mainnet` and use a funded wallet. Test on Celo Sepolia first.
 | `src/seller.ts` | The paid API (Hono and `@x402/hono`) |
 | `src/buyer.ts` | The paying client (`@x402/fetch`) |
 | `src/facilitator.ts` | Facilitator client that attaches your API key |
-| `src/config.ts` | Network, token and facilitator settings |
+| `src/config.ts` | Network, token and facilitator settings; loads `.env` |
 | `src/check.ts` | Keyless preflight |
+| `src/a2a/x402/` | x402 payments for A2A agents: metadata encoding, payment-gated executor, paying client |
+| `src/a2a/merchant.ts` | Merchant agent selling a Celo network report |
+| `src/a2a/buyer.ts` | Buyer agent that pays for it |
+| `src/a2a/report.ts` | The paid work: reads the latest Celo block |
+| `src/a2a/demo.ts` | Runs merchant and buyer end to end |
+| `test/a2a/` | Offline tests of the payment layer |

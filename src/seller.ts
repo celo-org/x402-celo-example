@@ -24,9 +24,9 @@ if (!process.env.SELLER_PAY_TO) {
 const server = new x402ResourceServer(facilitator)
 server.register('eip155:*', new ExactEvmScheme())
 
-// Celo is not in the packages' default-asset table, so a bare "$0.01" price
-// throws "No default asset configured" at request time. Name the token and its
-// EIP-712 domain explicitly instead.
+// The token and its EIP-712 domain are named explicitly here. With @x402/* >= 2.25
+// a bare "$0.01" also works on Celo (the A2A example uses that); older packages
+// throw "No default asset configured" for it.
 const routes = {
   'GET /premium': {
     accepts: [
