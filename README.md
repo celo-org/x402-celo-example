@@ -86,7 +86,12 @@ The payment layer in `src/a2a/x402/` works with any A2A agent:
 - `createPaymentExecutor(executor, { resourceServer, accepts, resource })` wraps an A2A `AgentExecutor`. The wrapped executor runs only after the payment has settled.
 - `x402A2AClient(a2aClient, x402Client)` pays `payment-required` tasks for a buyer.
 
-Failures come back as `payment-failed` with an error code (`INSUFFICIENT_FUNDS`, `EXPIRED_PAYMENT`, `INVALID_SIGNATURE`, `SETTLEMENT_FAILED`, …) and a receipt. The tests run offline: `npm test`.
+Failures come back as `payment-failed` with an error code (`INSUFFICIENT_FUNDS`, `EXPIRED_PAYMENT`, `INVALID_SIGNATURE`, `SETTLEMENT_FAILED`, …) and a receipt. A buyer that declines gets `payment-rejected`. If the paid work fails after settlement, the task fails but still carries `payment-completed` and the receipt, as proof of payment. A second payment submitted for the same task is not settled again. The tests run offline: `npm test`.
+
+Limits of this example:
+- It speaks A2A v1.0 (`@a2a-js/sdk` 1.x), so A2A v0.3 clients are not accepted.
+- Tasks and quotes live in memory.
+- If the facilitator's settle response is lost after the transfer went through, the task is reported as failed. Reconcile on chain using the payer and nonce in the merchant log.
 
 ## Troubleshooting
 

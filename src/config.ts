@@ -5,11 +5,11 @@
  */
 import { getAddress } from 'viem'
 
-// Load .env when present (Node >= 20.12); real environment variables win.
+// Load .env when present (Node >= 20.12); variables already set in the environment win.
 try {
   process.loadEnvFile()
-} catch {
-  // no .env file: rely on the environment
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
 }
 
 export const NETWORKS = {
@@ -42,12 +42,15 @@ export const SELLER_URL = process.env.SELLER_URL ?? `http://localhost:${PORT}/pr
  * mainnet also has USDT (USD₮) and USAT (USA₮).
  */
 const TOKENS = { testnet: ['USDC'], mainnet: ['USDC', 'USDT', 'USAT'] } as const
-export const TOKEN = (process.env.X402_TOKEN ?? 'USDC').toUpperCase()
-if (!(TOKENS[NET] as readonly string[]).includes(TOKEN)) {
-  console.error(`X402_TOKEN=${TOKEN} is not available on ${CFG.label}. Use one of: ${TOKENS[NET].join(', ')}`)
-  process.exit(1)
+
+/** The token to charge in and $0.01 of it as an @x402 money string ("$0.01" is the network's USDC). */
+export function a2aPricing(): { token: string; price: string } {
+  const token = (process.env.X402_TOKEN ?? 'USDC').toUpperCase()
+  if (!(TOKENS[NET] as readonly string[]).includes(token)) {
+    console.error(`X402_TOKEN=${token} is not available on ${CFG.label}. Use one of: ${TOKENS[NET].join(', ')}`)
+    process.exit(1)
+  }
+  return { token, price: token === 'USDC' ? '$0.01' : `0.01 ${token}` }
 }
-/** $0.01 in the chosen token, as an @x402 money string ("$0.01" means the network's default USDC). */
-export const A2A_PRICE = TOKEN === 'USDC' ? '$0.01' : `0.01 ${TOKEN}`
 export const A2A_PORT = Number(process.env.A2A_PORT ?? 4000)
 export const MERCHANT_URL = process.env.MERCHANT_URL ?? `http://localhost:${A2A_PORT}`

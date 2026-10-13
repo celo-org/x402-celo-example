@@ -26,6 +26,7 @@ import {
   getPaymentStatus,
   paymentCompletedMetadata,
   paymentFailedMetadata,
+  paymentRejectedMetadata,
   paymentRequiredMetadata,
   type Metadata,
 } from './encoding.js'
@@ -65,8 +66,10 @@ export function errorCodeForInvalidReason(reason: string | undefined): X402Error
 }
 
 export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecutorOptions): AgentExecutor {
-  // Requirements quoted per task, kept until the task is paid or fails. In memory:
-  // a merchant restart drops unpaid quotes, and the buyer simply asks again.
+  // Requirements quoted per task, kept until the task is paid, rejected or fails.
+  // In memory: a restart drops unpaid quotes and the buyer asks again. Quotes a
+  // buyer never answers stay until restart (as do the SDK's in-memory tasks);
+  // a production merchant should expire them after maxTimeoutSeconds.
   const pending = new Map<string, PaymentRequirements[]>()
   const { resourceServer } = opts
 
@@ -126,21 +129,43 @@ export function createPaymentExecutor(inner: AgentExecutor, opts: PaymentExecuto
       return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(receipt.network ?? matched.network, receipt.errorReason ?? 'settlement_failed'))
     }
 
-    pending.delete(ctx.taskId)
-    await inner.execute(ctx, withReceipt(bus, ctx, paymentCompletedMetadata(receipt)))
+    // Paid. If the work then fails, the buyer still gets the receipt as proof of payment.
+    const completed = paymentCompletedMetadata(receipt)
+    const gated = withReceipt(bus, ctx, completed)
+    try {
+      await inner.execute(ctx, gated.bus)
+    } catch (error) {
+      console.error('[x402] paid work failed after settlement:', (error as Error).message)
+      if (!gated.started()) bus.publish(AgentEvent.task(taskSnapshot(ctx)))
+      publishStatus(ctx, bus, TaskState.TASK_STATE_FAILED, 'Payment completed, but the work failed.', completed)
+    }
   }
+
+  // Payments being processed, per task. A second submission for the same task
+  // waits for the first instead of settling again; the outcome reaches both
+  // callers through the task's shared event bus.
+  const inflight = new Map<string, Promise<void>>()
 
   return {
     async execute(ctx, bus) {
       if (ctx.context?.requestedExtensions?.includes(X402_EXTENSION_URI)) {
         ctx.context.addActivatedExtension(X402_EXTENSION_URI)
       }
+      const running = inflight.get(ctx.taskId)
+      if (running) return running
+
       const status = getPaymentStatus(ctx.userMessage.metadata)
       const requirements = pending.get(ctx.taskId)
 
-      if (requirements && status === 'payment-submitted') return settleAndRun(ctx, bus, requirements)
+      if (requirements && status === 'payment-submitted') {
+        pending.delete(ctx.taskId) // claim the quote before the first await
+        const run = settleAndRun(ctx, bus, requirements).finally(() => inflight.delete(ctx.taskId))
+        inflight.set(ctx.taskId, run)
+        return run
+      }
       if (requirements && status === 'payment-rejected') {
-        return fail(ctx, bus, 'SETTLEMENT_FAILED', failureReceipt(requirements[0]?.network ?? '', 'payment_rejected_by_client'))
+        pending.delete(ctx.taskId)
+        return publishTask(ctx, bus, TaskState.TASK_STATE_FAILED, 'Payment rejected by the client.', paymentRejectedMetadata())
       }
       // Anything else (a new request, or a message on an unpaid task without a
       // payment) gets a fresh quote. Work only ever runs from settleAndRun.
@@ -176,34 +201,46 @@ function agentMessage(ctx: RequestContext, text: string, metadata: Metadata): Me
   }
 }
 
+function taskSnapshot(ctx: RequestContext): Task {
+  return (
+    ctx.task ?? {
+      id: ctx.taskId,
+      contextId: ctx.contextId,
+      status: { state: TaskState.TASK_STATE_SUBMITTED, message: undefined, timestamp: new Date().toISOString() },
+      artifacts: [],
+      history: [ctx.userMessage],
+      metadata: undefined,
+    }
+  )
+}
+
+function publishStatus(ctx: RequestContext, bus: ExecutionEventBus, state: TaskState, text: string, metadata: Metadata) {
+  bus.publish(
+    AgentEvent.statusUpdate({
+      taskId: ctx.taskId,
+      contextId: ctx.contextId,
+      status: { state, message: agentMessage(ctx, text, metadata), timestamp: new Date().toISOString() },
+      metadata: undefined,
+    }),
+  )
+}
+
 /**
  * Publishes the task snapshot (every turn must start with a task or message
  * event), then the new state as a status update: the SDK ends a blocking call
  * on a terminal or input-required status update, not on a task event.
  */
 function publishTask(ctx: RequestContext, bus: ExecutionEventBus, state: TaskState, text: string, metadata: Metadata) {
-  const now = new Date().toISOString()
-  const task: Task = ctx.task ?? {
-    id: ctx.taskId,
-    contextId: ctx.contextId,
-    status: { state: TaskState.TASK_STATE_SUBMITTED, message: undefined, timestamp: now },
-    artifacts: [],
-    history: [ctx.userMessage],
-    metadata: undefined,
-  }
-  bus.publish(AgentEvent.task(task))
-  bus.publish(
-    AgentEvent.statusUpdate({
-      taskId: ctx.taskId,
-      contextId: ctx.contextId,
-      status: { state, message: agentMessage(ctx, text, metadata), timestamp: now },
-      metadata: undefined,
-    }),
-  )
+  bus.publish(AgentEvent.task(taskSnapshot(ctx)))
+  publishStatus(ctx, bus, state, text, metadata)
 }
 
-/** Adds the payment receipt to the status message of the wrapped executor's terminal status. */
-function withReceipt(bus: ExecutionEventBus, ctx: RequestContext, metadata: Metadata): ExecutionEventBus {
+/**
+ * Wraps the bus handed to the paid executor: adds the payment receipt to its
+ * terminal status, and records whether it published anything.
+ */
+function withReceipt(bus: ExecutionEventBus, ctx: RequestContext, metadata: Metadata) {
+  let started = false
   const stamp = (status: TaskStatus | undefined) => {
     if (!status || !TERMINAL_STATES.has(status.state)) return
     status.message = status.message
@@ -212,9 +249,10 @@ function withReceipt(bus: ExecutionEventBus, ctx: RequestContext, metadata: Meta
   }
   const wrapped = Object.create(bus) as ExecutionEventBus
   wrapped.publish = (event: AgentExecutionEvent) => {
+    started = true
     if (event.kind === 'statusUpdate') stamp(event.data.status)
     if (event.kind === 'task') stamp(event.data.status)
     bus.publish(event)
   }
-  return wrapped
+  return { bus: wrapped, started: () => started }
 }

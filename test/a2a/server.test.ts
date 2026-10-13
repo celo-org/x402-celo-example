@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TaskState, type Message, type Task } from '@a2a-js/sdk'
+import { ServerCallContext } from '@a2a-js/sdk/server'
 import { merchant, request, REQUIREMENT, signedPayload, userMessage } from './harness.js'
 import {
   getPaymentError,
@@ -177,6 +178,61 @@ describe('createPaymentExecutor', () => {
     expect(JSON.stringify(failed)).not.toContain('sk_live_secret')
   })
 
+  it('settles once and delivers the work when the same payment is submitted twice at once', async () => {
+    const m = merchant({
+      // Like the real facilitator: a second settlement of the same authorization fails.
+      settle: (() => {
+        let used = false
+        return async () => {
+          await new Promise((r) => setTimeout(r, 10))
+          if (used) return { success: false, errorReason: 'nonce_already_used', transaction: '', network: REQUIREMENT.network }
+          used = true
+          return { success: true, transaction: '0xsettled', network: REQUIREMENT.network, payer: '0xbuyer' }
+        }
+      })(),
+    })
+    const task = await requirePayment(m)
+    const payment = paymentSubmittedMetadata(signedPayload())
+
+    const [a, b] = await Promise.all([submit(m, task, payment), submit(m, task, payment)])
+
+    expect(m.resourceServer.settlePayment).toHaveBeenCalledTimes(1)
+    expect(m.inner.execute).toHaveBeenCalledTimes(1)
+    for (const r of [a, b]) {
+      expect(r.status?.state).toBe(TaskState.TASK_STATE_COMPLETED)
+      expect(getReceipts(meta(r))[0]).toMatchObject({ success: true, transaction: '0xsettled' })
+    }
+    const stored = await m.handler.getTask({ tenant: '', id: task.id, historyLength: undefined }, new ServerCallContext())
+    expect(stored.status?.state).toBe(TaskState.TASK_STATE_COMPLETED)
+  })
+
+  it('never settles two different payments for one task', async () => {
+    const m = merchant()
+    const task = await requirePayment(m)
+    const first = paymentSubmittedMetadata(signedPayload())
+    const second = paymentSubmittedMetadata({ ...signedPayload(), payload: { ...signedPayload().payload, signature: '0xother' } })
+
+    await Promise.all([submit(m, task, first), submit(m, task, second)])
+
+    expect(m.resourceServer.settlePayment).toHaveBeenCalledTimes(1)
+    expect(m.inner.execute).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns the receipt when the paid work fails after settlement', async () => {
+    const m = merchant()
+    m.inner.execute.mockImplementationOnce(async () => {
+      throw new Error('rpc timeout at https://internal.example')
+    })
+    const task = await requirePayment(m)
+
+    const failed = await submit(m, task, paymentSubmittedMetadata(signedPayload()))
+
+    expect(failed.status?.state).toBe(TaskState.TASK_STATE_FAILED)
+    expect(getPaymentStatus(meta(failed))).toBe('payment-completed')
+    expect(getReceipts(meta(failed))).toEqual([{ success: true, transaction: '0xsettled', network: REQUIREMENT.network, payer: '0xbuyer' }])
+    expect(JSON.stringify(failed)).not.toContain('internal.example')
+  })
+
   it('fails the task without settling when the buyer rejects', async () => {
     const m = merchant()
     const task = await requirePayment(m)
@@ -184,7 +240,7 @@ describe('createPaymentExecutor', () => {
     const failed = await submit(m, task, paymentRejectedMetadata())
 
     expect(failed.status?.state).toBe(TaskState.TASK_STATE_FAILED)
-    expect(getPaymentStatus(meta(failed))).toBe('payment-failed')
+    expect(getPaymentStatus(meta(failed))).toBe('payment-rejected')
     expect(m.resourceServer.verifyPayment).not.toHaveBeenCalled()
     expect(m.inner.execute).not.toHaveBeenCalled()
   })

@@ -1,6 +1,6 @@
 # Design: agent-to-agent (A2A) payments on Celo with x402
 
-Status: approved design, pre-implementation
+Status: phase 1 implemented in this repo (src/a2a); phase 2 (upstream) not started
 Scope: `celo-org/x402-celo-example` (phase 1), then `x402-foundation/x402` (phase 2)
 
 ## Goal
@@ -46,7 +46,7 @@ Phase 1 puts the reusable layer under `src/a2a/x402/`. Its layout matches `types
 |---|---|---|---|
 | `src/a2a/x402/constants.ts` | Extension URI, metadata keys, status values, error codes | constants and types | none |
 | `src/a2a/x402/encoding.ts` | Read and write `x402.payment.*` on A2A message metadata, validated with `@x402/core` schemas. Serialization drops `undefined`/`null`. | `getPaymentStatus(msg)`, `getPaymentRequired(msg)`, `getPaymentPayload(msg)`, `getReceipts(msg)`, `paymentRequiredMetadata(pr)`, `paymentSubmittedMetadata(payload)`, `paymentCompletedMetadata(receipt)`, `paymentFailedMetadata(code, receipt)` | `@x402/core` |
-| `src/a2a/x402/server.ts` | Wraps any A2A `AgentExecutor` so it is paid before it runs | `createPaymentExecutor(inner: AgentExecutor, opts: { resourceServer: x402ResourceServer; accepts: PaymentOption[] or (ctx) => PaymentOption[]; resource?: (ctx) => ResourceInfo }): AgentExecutor` | `@a2a-js/sdk/server`, `@x402/core/server`, `encoding` |
+| `src/a2a/x402/server.ts` | Wraps any A2A `AgentExecutor` so it is paid before it runs | `createPaymentExecutor(inner: AgentExecutor, opts: { resourceServer: x402ResourceServer; accepts: PaymentOption[] or (ctx) => PaymentOption[]; resource: (ctx) => ResourceInfo }): AgentExecutor` | `@a2a-js/sdk/server`, `@x402/core/server`, `encoding` |
 | `src/a2a/x402/client.ts` | Wraps an A2A client so payment-required replies are paid automatically | `x402A2AClient(a2aClient, x402Client, opts?: { onPaymentRequired?: (pr) => boolean or Promise<boolean> })`, which provides `.sendMessage(params) → Promise<{ task, receipts }>` | `@a2a-js/sdk/client`, `@x402/core/client`, `encoding` |
 | `src/a2a/x402/index.ts` | Public exports | | |
 | `src/a2a/merchant.ts` | Example merchant. Sells a "Celo network report" (latest block number, base fee, timestamp, read through the network RPC) for $0.01. Serves the agent card and A2A endpoint with the SDK's Express integration. | `npm run a2a:merchant` | `x402/*`, `config.ts`, `facilitator.ts` |

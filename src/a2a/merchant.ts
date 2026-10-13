@@ -11,7 +11,7 @@ import { agentCardHandler, jsonRpcHandler, UserBuilder } from '@a2a-js/sdk/serve
 import { x402ResourceServer } from '@x402/core/server'
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { getAddress } from 'viem'
-import { A2A_PORT, A2A_PRICE, CFG, MERCHANT_URL, TOKEN } from '../config.js'
+import { A2A_PORT, a2aPricing, CFG, MERCHANT_URL } from '../config.js'
 import { facilitator } from '../facilitator.js'
 import { CeloReportExecutor } from './report.js'
 import { createPaymentExecutor, X402_EXTENSION_URI } from './x402/index.js'
@@ -25,6 +25,7 @@ if (!process.env.SELLER_PAY_TO) {
   process.exit(1)
 }
 const payTo = getAddress(process.env.SELLER_PAY_TO)
+const { token: TOKEN, price: A2A_PRICE } = a2aPricing()
 
 const resourceServer = new x402ResourceServer(facilitator)
 resourceServer.register('eip155:*', new ExactEvmScheme())
@@ -72,7 +73,11 @@ const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), executo
 const app = express()
 app.use(`/${AGENT_CARD_PATH}`, agentCardHandler({ agentCardProvider: handler }))
 app.use(jsonRpcHandler({ requestHandler: handler, userBuilder: UserBuilder.noAuthentication }))
-app.listen(A2A_PORT, () => {
+app.listen(A2A_PORT, (error) => {
+  if (error) {
+    console.error(`Cannot listen on port ${A2A_PORT}: ${error.message}`)
+    process.exit(1)
+  }
   console.log(`Merchant agent on ${MERCHANT_URL} (${CFG.label}, ${A2A_PRICE} in ${TOKEN})`)
   console.log(`Agent card: ${MERCHANT_URL}/${AGENT_CARD_PATH}`)
 })

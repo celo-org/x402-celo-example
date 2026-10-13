@@ -24,15 +24,16 @@ const account = privateKeyToAccount((rawKey.startsWith('0x') ? rawKey : `0x${raw
 // Spend controls: the client refuses to sign anything above this per payment.
 const maxPerPayment = process.env.BUYER_MAX_PER_PAYMENT ?? '$0.05'
 const signer = new x402Client()
-signer.register('eip155:*', new ExactEvmScheme(account))
+// Only sign on the configured network, so a merchant cannot switch a testnet buyer to mainnet.
+signer.register(CFG.caip2, new ExactEvmScheme(account))
 signer.setSpendControls({ maxAmountPerPayment: maxPerPayment })
 
 const a2a = await new ClientFactory().createFromUrl(MERCHANT_URL)
 const buyer = x402A2AClient(a2a, signer, {
   onPaymentRequired: (pr) => {
-    const offer = pr.accepts[0]
-    console.log(`Merchant asks ${offer.amount} atomic units of ${offer.asset} on ${offer.network} (cap ${maxPerPayment})`)
-    return true
+    const offers = pr.accepts.filter((o) => o.network === CFG.caip2)
+    for (const o of offers) console.log(`Merchant asks ${o.amount} atomic units of ${o.asset} on ${o.network} (cap ${maxPerPayment})`)
+    return offers.length > 0
   },
 })
 
