@@ -40,7 +40,7 @@ npm run seller   # paid API on http://localhost:3000
 npm run buyer    # pays for it and prints the settlement transaction
 ```
 
-Inspect the 402 by hand: `curl -i http://localhost:3000/premium` returns `402 Payment Required` with a `payment-required` header.
+Inspect the 402 by hand: `curl -i http://localhost:3000/premium` returns `402 Payment Required` with a `payment-required` header, and the same challenge, decoded, as the JSON body. The middleware alone answers with an empty `{}` body; `src/mirror-402-body.ts` copies the header into the body so body-reading clients and crawlers see the challenge too.
 
 ## Mainnet
 
