@@ -51,6 +51,7 @@ describe('mirrorPaymentRequiredBody', () => {
     expect(res.status).toBe(402)
     const header = res.headers.get('PAYMENT-REQUIRED')
     expect(header).toBeTruthy()
+    expect(res.headers.get('Content-Type')).toBe('application/json')
     const body = await res.json()
     expect(body).toEqual(decodePaymentRequiredHeader(header!))
     expect(body).toEqual(CHALLENGE)
