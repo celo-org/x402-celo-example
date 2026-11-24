@@ -20,11 +20,18 @@ const CHALLENGE = {
   ],
 } as Parameters<typeof encodePaymentRequiredHeader>[0]
 
-/** What paymentMiddleware does for an unpaid request: the header, and a `{}` body. */
+const PAYWALL = '<!DOCTYPE html><html><body>paywall</body></html>'
+
+/**
+ * What paymentMiddleware does for an unpaid request: the header, and a `{}`
+ * body, or for a browser (Accept: text/html and a Mozilla user agent, as in
+ * @x402/core's isWebBrowser) an HTML paywall with the same status and header.
+ */
 const unpaid: MiddlewareHandler = async (c, next) => {
   if (c.req.path !== '/premium') return next()
   c.header('PAYMENT-REQUIRED', encodePaymentRequiredHeader(CHALLENGE))
-  return c.json({}, 402)
+  const browser = (c.req.header('Accept') ?? '').includes('text/html') && (c.req.header('User-Agent') ?? '').includes('Mozilla')
+  return browser ? c.html(PAYWALL, 402) : c.json({}, 402)
 }
 
 function app(withMirror: boolean) {
@@ -55,6 +62,16 @@ describe('mirrorPaymentRequiredBody', () => {
     const body = await res.json()
     expect(body).toEqual(decodePaymentRequiredHeader(header!))
     expect(body).toEqual(CHALLENGE)
+  })
+
+  it('leaves the HTML paywall a browser gets unchanged', async () => {
+    const res = await app(true).request('/premium', {
+      headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'Mozilla/5.0' },
+    })
+    expect(res.status).toBe(402)
+    expect(res.headers.get('PAYMENT-REQUIRED')).toBeTruthy()
+    expect(res.headers.get('Content-Type')).toMatch(/^text\/html/)
+    expect(await res.text()).toBe(PAYWALL)
   })
 
   it("leaves a seller's own 402 without the header unchanged", async () => {
