@@ -10,6 +10,7 @@ import { paymentMiddleware, x402ResourceServer } from '@x402/hono'
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { getAddress } from 'viem'
 import { facilitator } from './facilitator.js'
+import { mirrorPaymentRequiredBody } from './mirror-402-body.js'
 import { CFG, PORT } from './config.js'
 
 if (!process.env.X402_API_KEY) {
@@ -46,6 +47,7 @@ const routes = {
 }
 
 const app = new Hono()
+app.use(mirrorPaymentRequiredBody) // the challenge in the 402 body too, not only the header
 app.use(paymentMiddleware(routes as any, server)) // routes first, then server
 app.get('/premium', (c) => c.json({ data: 'this response cost $0.01' }))
 
